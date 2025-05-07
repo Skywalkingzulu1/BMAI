@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Job Application Copilot</title>
+    <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            max-width: 1400px;
+            margin: 0 auto;
+            background: #1a1a1a;
+            color: #e0e0e0;
+            line-height: 1.6;
+        }
+
+        .container {
+            display: grid;
+            grid-template-columns: 300px 1fr;
+            gap: 20px;
+        }
+
+        .sidebar {
+            background: #2d2d2d;
+            border-radius: 12px;
+            padding: 20px;
+            height: calc(100vh - 40px);
+            position: sticky;
+            top: 20px;
+        }
+
+        .main-content {
+            background: #2d2d2d;
+            border-radius: 12px;
+            padding: 20px;
+            height: calc(100vh - 40px);
+            overflow: hidden;
+        }
+
+        .section {
+            margin-bottom: 20px;
+        }
+
+        h2 {
+            color: #4CAF50;
+            border-bottom: 2px solid #4CAF50;
+            padding-bottom: 10px;
+        }
+
+        input[type="text"], input[type="file"] {
+            width: 100%;
+            padding: 10px;
+            margin: 10px 0;
+            border: none;
+            border-radius: 4px;
+            background: #3d3d3d;
+            color: #e0e0e0;
+        }
+
+        button {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+
+        button:hover {
+            transform: scale(1.05);
+        }
+
+        #chatDisplay {
+            height: 600px;
+            overflow-y: auto;
+            padding: 10px;
+            border-radius: 8px;
+            background: #3d3d3d;
+            margin-top: 20px;
+        }
+
+        .message {
+            margin: 15px 0;
+            padding: 12px;
+            border-radius: 8px;
+        }
+
+        .user-message {
+            background: #4CAF50;
+            color: white;
+        }
+
+        .ai-message {
+            background: #455A64;
+            color: white;
+        }
+
+        .system-message {
+            background: #FFA726;
+            color: black;
+        }
+
+        .job-result, .result-item {
+            background: #3d3d3d;
+            margin: 10px 0;
+            padding: 15px;
+            border-radius: 8px;
+            transition: transform 0.2s;
+        }
+
+        .job-result:hover, .result-item:hover {
+            transform: translateX(10px);
+        }
+
+        a {
+            color: #4CAF50;
+            text-decoration: none;
+        }
+
+        a:hover {
+            text-decoration: underline;
+        }
+
+        .loader {
+            border: 4px solid #4CAF50;
+            border-left-color: transparent;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .history-count {
+            position: absolute;
+            right: 30px;
+            top: 30px;
+            background: #4CAF50;
+            padding: 8px 15px;
+            border-radius: 20px;
+            font-size: 0.9em;
+        }
+
+        .input-area {
+            position: fixed;
+            bottom: 20px;
+            left: 0;
+            right: 0;
+            max-width: 1400px;
+            margin: 0 auto;
+            background: #2d2d2d;
+            padding: 15px;
+            border-radius: 8px;
+            display: flex;
+            gap: 10px;
+        }
+
+        .input-area input {
+            flex: 1;
+            padding: 15px;
+            border-radius: 20px;
+            background: #3d3d3d;
+        }
+
+        /* Dark mode scrollbar */
+        #chatDisplay::-webkit-scrollbar {
+            width: 10px;
+        }
+
+        #chatDisplay::-webkit-scrollbar-track {
+            background: #2d2d2d;
+        }
+
+        #chatDisplay::-webkit-scrollbar-thumb {
+            background: #4CAF50;
+            border-radius: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="sidebar">
+            <h2>Tools</h2>
+            <div class="section">
+                <h3>CV Upload</h3>
+                <input type="file" id="cvUpload" accept=".pdf">
+            </div>
+            <div class="section">
+                <h3>Job Search</h3>
+                <input type="text" id="jobSearch" placeholder="Search jobs...">
+                <button id="searchJobsBtn">Search</button>
+            </div>
+            <div class="section">
+                <h3>Company Research</h3>
+                <input type="text" id="companySearch" placeholder="Research companies...">
+                <button id="searchCompanyBtn">Search</button>
+            </div>
+            <div class="history-count">History: 0</div>
+        </div>
+
+        <div class="main-content">
+            <div id="chatDisplay"></div>
+            <div class="input-area">
+                <input type="text" id="chatInput" placeholder="Ask me anything...">
+                <button id="sendBtn">Send</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const DEEPSEEK_API_KEY = "sk-06b3e9d6d5584df697cb9d9e23560337";
+        const DEEPSEEK_URL = "https://api.deepseek.com/chat/completions";
+        const MAX_CONTEXT_WORDS = 6500;
+        const HISTORY_KEY = 'conversation_history';
+        const CV_KEY = 'user_cv';
+
+        let conversationHistory = JSON.parse(localStorage.getItem(HISTORY_KEY)) || [];
+        let cvText = localStorage.getItem(CV_KEY) || '';
+        updateHistoryCounter();
+
+        // CV Upload Handling
+        document.getElementById('cvUpload').addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            cvText = await extractTextFromPDF(file);
+            localStorage.setItem(CV_KEY, cvText);
+            appendMessage('system', 'CV uploaded and stored securely');
+        });
+
+        // Job Search Handling
+        document.getElementById('searchJobsBtn').addEventListener('click', async () => {
+            const query = document.getElementById('jobSearch').value;
+            if (!query) return;
+
+            appendMessage('system', `Searching for jobs related to: ${query}`);
+            const loader = addLoader();
+            
+            try {
+                const results = await searchHackerNewsJobs(query);
+                displayJobResults(results);
+            } catch (error) {
+                appendMessage('system', 'Error fetching job results');
+            } finally {
+                loader.remove();
+            }
+        });
+
+        // Company Research Handling
+        document.getElementById('searchCompanyBtn').addEventListener('click', async () => {
+            const query = document.getElementById('companySearch').value;
+            if (!query) return;
+
+            appendMessage('system', `Researching companies related to: ${query}`);
+            const loader = addLoader();
+            
+            try {
+                const results = await searchGoogleCompanies(query);
+                displayCompanyResults(results);
+            } catch (error) {
+                appendMessage('system', 'Error fetching company data');
+            } finally {
+                loader.remove();
+            }
+        });
+
+        // AI Interaction Handling
+        document.getElementById('sendBtn').addEventListener('click', async () => {
+            const message = document.getElementById('chatInput').value;
+            if (!message) return;
+
+            appendMessage('user', message);
+            const input = document.getElementById('chatInput');
+            input.value = '';
+            input.blur();
+
+            try {
+                const context = {
+                    jobResults: sessionStorage.getItem('latestJobResults') ? 
+                        JSON.parse(sessionStorage.getItem('latestJobResults')) : [],
+                    companyResults: sessionStorage.getItem('latestCompanyResults') ? 
+                        JSON.parse(sessionStorage.getItem('latestCompanyResults')) : []
+                };
+
+                const response = await callDeepSeek(message, context);
+                appendMessage('ai', response);
+            } catch (error) {
+                appendMessage('system', 'Error processing request');
+            }
+        });
+
+        // Core AI Function
+        async function callDeepSeek(prompt, context) {
+            const contextData = {
+                cv: cvText,
+                jobResults: context.jobResults || [],
+                companyResults: context.companyResults || [],
+                history: conversationHistory
+            };
+
+            let fullPrompt = `
+                CV Content:
+                ${contextData.cv}
+
+                ${contextData.jobResults.length > 0 ? 
+                    `Recent Job Search Results:\n${JSON.stringify(contextData.jobResults)}` : ''}
+
+                ${contextData.companyResults.length > 0 ? 
+                    `Recent Company Research:\n${JSON.stringify(contextData.companyResults)}` : ''}
+
+                Conversation History:
+                ${contextData.history.map(m => `${m.role}: ${m.content}`).join('\n')}
+
+                Current Query:
+                ${prompt}
+                
+                Provide concise, professional advice in bullet points
+            `;
+
+            // Context trimming logic
+            let words = fullPrompt.split(/\s+/);
+            while (words.length > MAX_CONTEXT_WORDS) {
+                if (conversationHistory.length > 0) {
+                    conversationHistory.shift();
+                } else {
+                    words = words.slice(0, MAX_CONTEXT_WORDS);
+                    break;
+                }
+                // Rebuild prompt after trimming
+                fullPrompt = `
+                    CV Content:
+                    ${contextData.cv}
+
+                    ${contextData.jobResults.length > 0 ? 
+                        `Recent Job Search Results:\n${JSON.stringify(contextData.jobResults)}` : ''}
+
+                    ${contextData.companyResults.length > 0 ? 
+                        `Recent Company Research:\n${JSON.stringify(contextData.companyResults)}` : ''}
+
+                    Conversation History:
+                    ${conversationHistory.map(m => `${m.role}: ${m.content}`).join('\n')}
+
+                    Current Query:
+                    ${prompt}
+                `;
+                words = fullPrompt.split(/\s+/);
+            }
+
+            try {
+                const response = await fetch(DEEPSEEK_URL, {
+                    method: "POST",
+                    headers: {
+                        "Authorization": `Bearer ${DEEPSEEK_API_KEY}`,
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({
+                        model: "deepseek-chat",
+                        messages: [
+                            { role: "system", content: "You are a job application expert with access to CV analysis, job search results, and company research data" },
+                            { role: "user", content: fullPrompt }
+                        ],
+                        temperature: 0.7,
+                        max_tokens: 7000
+                    })
+                });
+                
+                const data = await response.json();
+                const aiResponse = data.choices[0].message.content;
+                
+                // Update history
+                conversationHistory.push({ role: 'user', content: prompt });
+                conversationHistory.push({ role: 'ai', content: aiResponse });
+                localStorage.setItem(HISTORY_KEY, JSON.stringify(conversationHistory));
+                updateHistoryCounter();
+
+                return aiResponse;
+            } catch (error) {
+                return "Error processing request";
+            }
+        }
+
+        // Helper Functions
+        function addLoader() {
+            const loader = document.createElement('div');
+            loader.className = 'loader';
+            document.getElementById('chatDisplay').appendChild(loader);
+            return loader;
+        }
+
+        function updateHistoryCounter() {
+            document.querySelector('.history-count').textContent = 
+                `History: ${conversationHistory.length}`;
+        }
+
+        async function extractTextFromPDF(file) {
+            return new Promise(resolve => {
+                const reader = new FileReader();
+                reader.onload = async () => {
+                    const pdf = await pdfjsLib.getDocument(reader.result).promise;
+                    let text = '';
+                    for(let i = 1; i <= pdf.numPages; i++) {
+                        text += await (await pdf.getPage(i)).getTextContent()
+                            .then(content => content.items.map(item => item.str).join(' '));
+                    }
+                    resolve(text);
+                };
+                reader.readAsArrayBuffer(file);
+            });
+        }
+
+        async function searchHackerNewsJobs(query) {
+            const url = `https://community-hn-search.p.rapidapi.com/search?query=${encodeURIComponent(query)}&tags=job`;
+            
+            try {
+                const response = await fetch(url, {
+                    method: 'GET',
+                    mode: 'cors',
+                    headers: {
+                        'X-RapidAPI-Key': 'b98c400532msh802af978b19f199p1f5afdjsn73f46e36ecff',
+                        'X-RapidAPI-Host': 'community-hn-search.p.rapidapi.com'
+                    }
+                });
+
+                if (!response.ok) throw new Error('API request failed');
+                const data = await response.json();
+                sessionStorage.setItem('latestJobResults', JSON.stringify(data.hits || []));
+                return data.hits || [];
+
+            } catch (error) {
+                console.error('HN Search Error:', error);
+                throw error;
+            }
+        }
+
+        async function searchGoogleCompanies(query) {
+            const url = `https://google-search74.p.rapidapi.com/?query=${encodeURIComponent(query)}&limit=20`;
+            
+            try {
+                const response = await fetch(url, {
+                    method: 'GET',
+                    mode: 'cors',
+                    headers: {
+                        'X-RapidAPI-Key': 'b98c400532msh802af978b19f199p1f5afdjsn73f46e36ecff',
+                        'X-RapidAPI-Host': 'google-search74.p.rapidapi.com'
+                    }
+                });
+
+                if (!response.ok) throw new Error('API request failed');
+                const data = await response.json();
+                const results = {
+                    knowledge_panel: data.knowledge_panel,
+                    results: data.results || []
+                };
+                sessionStorage.setItem('latestCompanyResults', JSON.stringify(results));
+                return results;
+
+            } catch (error) {
+                console.error('Google Search Error:', error);
+                throw error;
+            }
+        }
+
+        function displayJobResults(jobs) {
+            if (jobs.length === 0) {
+                appendMessage('system', 'No job results found');
+                return;
+            }
+
+            const resultsHtml = jobs.map(job => `
+                <div class="job-result">
+                    <div class="job-title">${job.title}</div>
+                    <div class="job-company">by ${job.author}</div>
+                    <a href="${job.url}" target="_blank">View Job</a>
+                </div>
+            `).join('');
+
+            appendMessage('system', `Found ${jobs.length} job postings:`, resultsHtml);
+        }
+
+        function displayCompanyResults(data) {
+            if (data.knowledge_panel) {
+                const kp = data.knowledge_panel;
+                const kpHtml = `
+                    <div class="result-item">
+                        <div class="result-title">${kp.name || ''}</div>
+                        <div class="result-label">${kp.label || ''}</div>
+                        <div class="result-description">${kp.description?.text || ''}</div>
+                        <a class="result-link" href="${kp.url || ''}" target="_blank">Wikipedia</a>
+                    </div>
+                `;
+                appendMessage('system', 'Company Overview:', kpHtml);
+            }
+
+            if (data.results.length === 0) {
+                appendMessage('system', 'No related resources found');
+                return;
+            }
+
+            const resultsHtml = data.results.slice(0, 5).map(result => `
+                <div class="result-item">
+                    <div class="result-title">${result.title}</div>
+                    <div class="result-link"><a href="${result.url}" target="_blank">${result.url}</a></div>
+                    <div class="result-snippet">${result.description}</div>
+                </div>
+            `).join('');
+
+            appendMessage('system', `Related resources:`, resultsHtml);
+        }
+
+        function appendMessage(sender, message, htmlContent = '') {
+            const chatDisplay = document.getElementById('chatDisplay');
+            const msgDiv = document.createElement('div');
+            msgDiv.className = `message ${sender}-message`;
+            
+            // Process AI response formatting
+            if (sender === 'ai') {
+                message = message
+                    .replace(/#### (.*?)\n/g, '<h3>$1</h3>') // Headers
+                    .replace(/- /g, '• ') // Bullet points
+                    .replace(/(\*\*|__)(.*?)\1/g, '<strong>$2</strong>') // Bold
+                    .replace(/\n/g, '<br>'); // Line breaks
+            }
+
+            msgDiv.innerHTML = `
+                <div class="message-header">
+                    <strong>${sender === 'user' ? 'You' : sender === 'ai' ? 'AI Assistant' : 'System'}</strong>
+                </div>
+                <div class="message-content">
+                    ${message}
+                    ${htmlContent}
+                </div>
+            `;
+            
+            chatDisplay.appendChild(msgDiv);
+            chatDisplay.scrollTop = chatDisplay.scrollHeight;
+        }
+    </script>
+</body>
+</html>
