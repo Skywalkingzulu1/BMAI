@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Daily Devotional Guide</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            max-width: 800px;
+            margin: 0 auto;
+            background: #1a1a1a;
+            color: #e0e0e0;
+            line-height: 1.6;
+        }
+        .container {
+            background: #2d2d2d;
+            border-radius: 12px;
+            padding: 20px;
+        }
+        h1 {
+            color: #4CAF50;
+            margin-bottom: 10px;
+        }
+        .verse-box {
+            background: #3d3d3d;
+            border-left: 5px solid #4CAF50;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 8px;
+        }
+        .chat-input {
+            margin-top: 20px;
+            display: flex;
+            gap: 10px;
+        }
+        input[type="text"] {
+            flex: 1;
+            padding: 12px;
+            border-radius: 20px;
+            border: none;
+            background: #4d4d4d;
+            color: white;
+        }
+        button {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 12px 20px;
+            border-radius: 20px;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #45b744;
+        }
+        .loader {
+            border: 4px solid #4CAF50;
+            border-left-color: transparent;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            display: inline-block;
+            vertical-align: middle;
+            margin-right: 10px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .history-tab {
+            margin-top: 20px;
+            background: #3d3d3d;
+            padding: 15px;
+            border-radius: 8px;
+        }
+        .history-item {
+            margin: 10px 0;
+            padding: 10px;
+            background: #4d4d4d;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+        .history-item:hover {
+            background: #5d5d5d;
+        }
+        .ai-message {
+            white-space: pre-line;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Daily Devotional Guide</h1>
+        <p>Grow in grace and knowledge through daily spiritual insights</p>
+
+        <button onclick="getDailyContent()">Get Daily Verse</button>
+
+        <div id="verseDisplay" class="verse-box">
+            <p>Click the button to get today's verse</p>
+        </div>
+
+        <div id="aiInsight" class="verse-box"></div>
+
+        <div class="chat-input">
+            <input type="text" id="chatInput" placeholder="Ask a question about this verse..." />
+            <button onclick="askAI()">Ask</button>
+        </div>
+
+        <div class="history-tab">
+            <h3>History</h3>
+            <div id="historyList"></div>
+        </div>
+    </div>
+
+    <script>
+        let currentVerse = null;
+        const HISTORY_KEY = 'daily_devotion_history';
+        const historyList = document.getElementById('historyList');
+
+        // Load history on page load
+        document.addEventListener('DOMContentLoaded', () => {
+            loadHistory();
+            // Get today's verse if first visit
+            if (!localStorage.getItem('todayVerseLoaded')) {
+                getRandomVerse();
+                localStorage.setItem('todayVerseLoaded', true);
+            }
+        });
+
+        async function getDailyContent() {
+            try {
+                const verse = await getRandomVerse();
+                currentVerse = verse;
+                
+                // Display verse
+                document.getElementById('verseDisplay').innerHTML = `
+                    <blockquote>"${verse.text}"</blockquote>
+                    <p><strong>${verse.reference}</strong></p>
+                    <p class="small">From ${verse.book_name} ${verse.chapter}:${verse.verse}</p>
+                `;
+                
+                // Generate AI insight
+                document.getElementById('aiInsight').innerHTML = `
+                    <div class="loader"></div> Generating spiritual insights...
+                `;
+                
+                const insight = await generateStudyGuide(verse);
+                document.getElementById('aiInsight').innerHTML = insight;
+                
+                // Save to history
+                saveToHistory(verse, insight);
+                
+            } catch (error) {
+                document.getElementById('verseDisplay').innerHTML = `
+                    <p>Error loading verse. Please try again later.</p>
+                `;
+            }
+        }
+
+        async function getRandomVerse() {
+            const response = await fetch('https://bible-api-apiverve.p.rapidapi.com/v1/randomverse ', {
+                method: 'GET',
+                headers: {
+                    'x-rapidapi-key': 'b98c400532msh802af978b19f199p1f5afdjsn73f46e36ecff',
+                    'x-rapidapi-host': 'bible-api-apiverve.p.rapidapi.com',
+                    'Accept': 'application/json'
+                }
+            });
+            
+            if (!response.ok) throw new Error('Verse load failed');
+            const data = await response.json();
+            return data.data;
+        }
+
+        async function generateStudyGuide(verse) {
+            const prompt = `
+                You are a spiritual mentor providing daily devotional guidance.
+                Today's verse: "${verse.text}" (${verse.reference})
+                
+                Provide:
+                1. A brief interpretation of the verse
+                2. Practical application for daily life
+                3. A related prayer
+                4. A reflection question
+                
+                Format your response in clear sections with headings.
+            `;
+            
+            try {
+                const response = await fetch('https://api.deepseek.com/chat/completions ', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer sk-06b3e9d6d5584df697cb9d9e23560337`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        model: 'deepseek-chat',
+                        messages: [
+                            { role: 'system', content: 'You are a spiritual mentor providing encouragement and biblical wisdom' },
+                            { role: 'user', content: prompt }
+                        ],
+                        temperature: 0.7,
+                        max_tokens: 7000
+                    })
+                });
+                
+                if (!response.ok) throw new Error('AI request failed');
+                const data = await response.json();
+                return data.choices[0].message.content;
+            } catch (error) {
+                return "Error generating AI insights";
+            }
+        }
+
+        function saveToHistory(verse, insight) {
+            const history = JSON.parse(localStorage.getItem(HISTORY_KEY)) || [];
+            const today = new Date().toISOString().split('T')[0];
+            
+            history.unshift({
+                date: today,
+                verse: {
+                    text: verse.text,
+                    reference: verse.reference,
+                    book: verse.book_name,
+                    chapter: verse.chapter,
+                    verseNum: verse.verse
+                },
+                insight: insight
+            });
+            
+            // Keep only last 7 days
+            if (history.length > 7) {
+                history.pop();
+            }
+            
+            localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+            loadHistory();
+        }
+
+        function loadHistory() {
+            const history = JSON.parse(localStorage.getItem(HISTORY_KEY)) || [];
+            
+            historyList.innerHTML = history.map((item, index) => `
+                <div class="history-item" onclick="showHistoryItem(${index})">
+                    <strong>${item.date}</strong>: ${item.verse.reference}
+                </div>
+            `).join('');
+        }
+
+        function showHistoryItem(index) {
+            const history = JSON.parse(localStorage.getItem(HISTORY_KEY)) || [];
+            const item = history[index];
+            
+            document.getElementById('verseDisplay').innerHTML = `
+                <blockquote>"${item.verse.text}"</blockquote>
+                <p><strong>${item.verse.reference}</strong></p>
+                <p class="small">From ${item.verse.book} ${item.verse.chapter}:${item.verse.verseNum}</p>
+            `;
+            
+            document.getElementById('aiInsight').innerHTML = item.insight;
+        }
+
+        async function askAI() {
+            const input = document.getElementById('chatInput');
+            const question = input.value.trim();
+            if (!question || !currentVerse) return;
+            
+            // Clear input
+            input.value = '';
+            
+            // Add to chat
+            const chatDisplay = document.getElementById('aiInsight');
+            chatDisplay.innerHTML += `
+                <div style="margin: 15px 0; padding: 10px; background: #455A64; border-radius: 8px;">
+                    <strong>You:</strong> ${question}
+                </div>
+            `;
+            
+            // Show loading
+            chatDisplay.innerHTML += `
+                <div style="margin: 15px 0; padding: 10px; background: #455A64; border-radius: 8px;">
+                    <div class="loader"></div> Thinking...
+                </div>
+            `;
+            
+            try {
+                const response = await fetch('https://api.deepseek.com/chat/completions ', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer sk-06b3e9d6d5584df697cb9d9e23560337`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        model: 'deepseek-chat',
+                        messages: [
+                            { role: 'system', content: 'You are a spiritual mentor providing encouragement and biblical wisdom' },
+                            { role: 'user', content: `Verse: "${currentVerse.text}" (${currentVerse.reference})\nQuestion: ${question}` }
+                        ],
+                        temperature: 0.7,
+                        max_tokens: 7000
+                    })
+                });
+                
+                if (!response.ok) throw new Error('AI request failed');
+                const data = await response.json();
+                
+                // Replace loading message
+                chatDisplay.innerHTML = chatDisplay.innerHTML.replace('Thinking...', `
+                    <div style="margin: 15px 0; padding: 10px; background: #455A64; border-radius: 8px;">
+                        <strong>AI:</strong> ${data.choices[0].message.content}
+                    </div>
+                `);
+            } catch (error) {
+                // Replace loading message
+                chatDisplay.innerHTML = chatDisplay.innerHTML.replace('Thinking...', `
+                    <div style="margin: 15px 0; padding: 10px; background: #455A64; border-radius: 8px;">
+                        <strong>AI:</strong> Error: ${error.message}
+                    </div>
+                `);
+            }
+        }
+    </script>
+</body>
+</html>
