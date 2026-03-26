@@ -6,7 +6,7 @@ from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from pydantic import BaseModel, EmailStr, validator
+from pydantic import BaseModel, EmailStr, Field, validator
 
 # ----------------------------------------------------------------------
 # In‑memory "database"
@@ -81,13 +81,14 @@ class User(BaseModel):
 
 class UserCreate(BaseModel):
     email: EmailStr
-    password: str
+    password: str = Field(..., min_length=6)
     role: Literal["driver", "company"]
 
     @validator("password")
-    def password_strength(cls, v: str) -> str:
-        if len(v) < 6:
-            raise ValueError("Password must be at least 6 characters long")
+    def password_not_common(cls, v: str) -> str:
+        # Very light check – real apps should use a password‑strength library.
+        if v.lower() == "password":
+            raise ValueError("Password is too common")
         return v
 
 
@@ -98,86 +99,98 @@ class Token(BaseModel):
 
 class TokenData(BaseModel):
     email: Optional[EmailStr] = None
+    role: Optional[Literal["driver", "company"]] = None
+
+
+class UserResponse(BaseModel):
+    email: EmailStr
+    role: Literal["driver", "company"]
+    is_verified: bool
+
 
 # ----------------------------------------------------------------------
-# Dependency helpers
+# FastAPI app and utility dependencies
 # ----------------------------------------------------------------------
-async def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
-    """Retrieve the current user based on the JWT token.
+app = FastAPI(title="Drive Online Authentication API")
 
-    The token is expected to contain a ``sub`` claim with the user's email.
-    """
+
+def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
+    """Dependency that extracts the current user from the JWT token."""
     payload = decode_token(token)
     email: str = payload.get("sub")
-    if email is None:
+    role: str = payload.get("role")
+    if email is None or role is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token payload missing subject",
+            detail="Invalid token payload",
         )
     user = users_db.get(email)
     if user is None:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
+            status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found",
+        )
+    if user.role != role:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token role mismatch",
         )
     return user
 
+
 # ----------------------------------------------------------------------
-# FastAPI application
+# Routes
 # ----------------------------------------------------------------------
-app = FastAPI(title="Driver Registration & Authentication API")
-
-
-@app.post("/register", response_model=Token, status_code=status.HTTP_201_CREATED)
-async def register(user_in: UserCreate):
-    """Register a new driver or company.
-
-    - Validates the payload via ``UserCreate``.
-    - Checks for existing email.
-    - Hashes the password and stores the user.
-    - Returns a JWT access token for immediate authentication.
+@app.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+def register(user_in: UserCreate):
+    """
+    Register a new driver or logistics company.
     """
     if user_in.email in users_db:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email already registered",
         )
-    hashed_pwd = get_password_hash(user_in.password)
+    hashed = get_password_hash(user_in.password)
     user = User(
         email=user_in.email,
-        hashed_password=hashed_pwd,
+        hashed_password=hashed,
         role=user_in.role,
-        is_verified=True,  # In a real app you would send a verification email.
+        is_verified=False,
     )
     users_db[user.email] = user
-    access_token = create_access_token(data={"sub": user.email, "role": user.role})
-    return Token(access_token=access_token)
+    return UserResponse(email=user.email, role=user.role, is_verified=user.is_verified)
 
 
 @app.post("/login", response_model=Token)
-async def login(form_data: OAuth2PasswordRequestForm = Depends()):
-    """Authenticate a user and return a JWT token.
-
-    ``OAuth2PasswordRequestForm`` expects ``username`` (used as email) and ``password`` fields.
+def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    """
+    Authenticate a user and return a JWT access token.
     """
     user = users_db.get(form_data.username)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
-            headers={"WWW-Authenticate": "Bearer"},
         )
     if not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
-            headers={"WWW-Authenticate": "Bearer"},
         )
-    access_token = create_access_token(data={"sub": user.email, "role": user.role})
+    access_token = create_access_token(
+        data={"sub": user.email, "role": user.role}
+    )
     return Token(access_token=access_token)
 
 
-@app.get("/me", response_model=User)
-async def read_current_user(current_user: User = Depends(get_current_user)):
-    """Return the authenticated user's details (excluding the password hash)."""
-    return current_user
+@app.get("/users/me", response_model=UserResponse)
+def read_current_user(current_user: User = Depends(get_current_user)):
+    """
+    Return the authenticated user's profile.
+    """
+    return UserResponse(
+        email=current_user.email,
+        role=current_user.role,
+        is_verified=current_user.is_verified,
+    )
