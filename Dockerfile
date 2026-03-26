@@ -1,27 +1,22 @@
-# Use the official lightweight Python image.
-FROM python:3.11-slim
+FROM python:3.12-slim
 
-# Set environment variables.
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-
-# Create and set the working directory.
+# Set working directory
 WORKDIR /app
 
-# Install system dependencies (if any) and clean up.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
+# Copy only requirements first for caching
+COPY requirements.txt ./
 
-# Copy only the requirements file and install Python dependencies.
-COPY requirements.txt .
+# Install dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application code.
-COPY . .
+# Copy the rest of the application code
+COPY . ./
 
-# Expose the port that the application will run on.
+# Default port (can be overridden at runtime)
+ENV PORT=8000
+
+# Expose the port the app runs on
 EXPOSE 8000
 
-# Use Python's built‑in HTTP server to serve the static site.
-CMD ["python", "-m", "http.server", "8000"]
+# Run a simple HTTP server to serve the static files
+CMD ["sh", "-c", "python -m http.server ${PORT:-8000}"]
