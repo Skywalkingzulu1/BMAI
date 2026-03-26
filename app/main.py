@@ -1,6 +1,6 @@
 import os
 from datetime import datetime, timedelta
-from typing import Literal, Optional
+from typing import Literal, Optional, Dict
 
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
@@ -11,7 +11,8 @@ from pydantic import BaseModel, EmailStr, validator
 # ----------------------------------------------------------------------
 # In‑memory "database"
 # ----------------------------------------------------------------------
-users_db: dict[str, "User"] = {}
+# The key is the user's email address; the value is a User instance.
+users_db: Dict[str, "User"] = {}
 
 # ----------------------------------------------------------------------
 # Settings & security utilities
@@ -22,18 +23,25 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 30
 EMAIL_TOKEN_EXPIRE_MINUTES = 60
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+# The tokenUrl must match the path of the login endpoint.
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
 
 
 def get_password_hash(password: str) -> str:
+    """Hash a plain password using bcrypt."""
     return pwd_context.hash(password)
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify a plain password against its bcrypt hash."""
     return pwd_context.verify(plain_password, hashed_password)
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+    """Create a JWT access token.
+
+    The token contains the supplied ``data`` and an expiration claim.
+    """
     to_encode = data.copy()
     expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
     to_encode.update({"exp": expire})
@@ -41,12 +49,17 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
 
 
 def create_email_token(email: str) -> str:
+    """Create a token used for email verification (not used in this task)."""
     expire = datetime.utcnow() + timedelta(minutes=EMAIL_TOKEN_EXPIRE_MINUTES)
     to_encode = {"sub": email, "exp": expire, "type": "email_verification"}
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
 def decode_token(token: str) -> dict:
+    """Decode a JWT token and return its payload.
+
+    Raises ``HTTPException`` with 401 if the token is invalid or expired.
+    """
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         return payload
@@ -55,7 +68,6 @@ def decode_token(token: str) -> dict:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Could not validate credentials",
         ) from exc
-
 
 # ----------------------------------------------------------------------
 # Pydantic models
@@ -84,76 +96,88 @@ class Token(BaseModel):
     token_type: str = "bearer"
 
 
+class TokenData(BaseModel):
+    email: Optional[EmailStr] = None
+
 # ----------------------------------------------------------------------
 # Dependency helpers
 # ----------------------------------------------------------------------
-def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
+async def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
+    """Retrieve the current user based on the JWT token.
+
+    The token is expected to contain a ``sub`` claim with the user's email.
+    """
     payload = decode_token(token)
     email: str = payload.get("sub")
-    if email is None or email not in users_db:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
-    return users_db[email]
-
-
-def require_role(required_role: str):
-    def role_dependency(user: User = Depends(get_current_user)):
-        if user.role != required_role:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Insufficient permissions",
-            )
-        return user
-
-    return role_dependency
-
-
-# ----------------------------------------------------------------------
-# FastAPI app & routes
-# ----------------------------------------------------------------------
-app = FastAPI(title="Drive Online Authentication API")
-
-
-@app.post("/register", status_code=201)
-def register(user_in: UserCreate):
-    if user_in.email in users_db:
-        raise HTTPException(status_code=400, detail="Email already registered")
-    hashed = get_password_hash(user_in.password)
-    user = User(email=user_in.email, hashed_password=hashed, role=user_in.role)
-    users_db[user.email] = user
-    email_token = create_email_token(user.email)
-    # NOTE: In a production system you would send this token via email.
-    return {"msg": "User registered. Verify email using the provided token.", "email_token": email_token}
-
-
-@app.get("/verify-email")
-def verify_email(token: str):
-    payload = decode_token(token)
-    if payload.get("type") != "email_verification":
-        raise HTTPException(status_code=400, detail="Invalid verification token")
-    email = payload.get("sub")
+    if email is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token payload missing subject",
+        )
     user = users_db.get(email)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    user.is_verified = True
-    return {"msg": "Email verified successfully"}
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+    return user
+
+# ----------------------------------------------------------------------
+# FastAPI application
+# ----------------------------------------------------------------------
+app = FastAPI(title="Driver Registration & Authentication API")
+
+
+@app.post("/register", response_model=Token, status_code=status.HTTP_201_CREATED)
+async def register(user_in: UserCreate):
+    """Register a new driver or company.
+
+    - Validates the payload via ``UserCreate``.
+    - Checks for existing email.
+    - Hashes the password and stores the user.
+    - Returns a JWT access token for immediate authentication.
+    """
+    if user_in.email in users_db:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already registered",
+        )
+    hashed_pwd = get_password_hash(user_in.password)
+    user = User(
+        email=user_in.email,
+        hashed_password=hashed_pwd,
+        role=user_in.role,
+        is_verified=True,  # In a real app you would send a verification email.
+    )
+    users_db[user.email] = user
+    access_token = create_access_token(data={"sub": user.email, "role": user.role})
+    return Token(access_token=access_token)
 
 
 @app.post("/login", response_model=Token)
-def login(form_data: OAuth2PasswordRequestForm = Depends()):
+async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    """Authenticate a user and return a JWT token.
+
+    ``OAuth2PasswordRequestForm`` expects ``username`` (used as email) and ``password`` fields.
+    """
     user = users_db.get(form_data.username)
-    if not user or not verify_password(form_data.password, user.hashed_password):
-        raise HTTPException(status_code=400, detail="Incorrect email or password")
-    if not user.is_verified:
-        raise HTTPException(status_code=403, detail="Email not verified")
-    access_token = create_access_token({"sub": user.email, "role": user.role})
-    return {"access_token": access_token, "token_type": "bearer"}
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if not verify_password(form_data.password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    access_token = create_access_token(data={"sub": user.email, "role": user.role})
+    return Token(access_token=access_token)
 
 
-@app.get("/protected/driver")
-def driver_endpoint(user: User = Depends(require_role("driver"))):
-    return {"msg": f"Hello Driver {user.email}"}
-
-
-@app.get("/protected/company")
-def company_endpoint(user: User = Depends(require_role("company"))):
-    return {"msg": f"Hello Company {user.email}"}
+@app.get("/me", response_model=User)
+async def read_current_user(current_user: User = Depends(get_current_user)):
+    """Return the authenticated user's details (excluding the password hash)."""
+    return current_user
