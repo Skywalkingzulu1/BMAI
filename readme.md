@@ -1,3 +1,3 @@
-Drive online allows Drivers to find Jobs online and logistics companies to find drivers in South Africa 
 
+A multi use AI platform, formerly a logistics platform 
 Author: Andile Skywalkingzulu Sizophila Mchunu
