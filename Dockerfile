@@ -1,22 +1,28 @@
+# Use the official lightweight Python image.
 FROM python:3.12-slim
 
-# Set working directory
+# Prevent Python from writing .pyc files and enable unbuffered output.
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+# Install any system dependencies required for building Python packages.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends gcc && \
+    rm -rf /var/lib/apt/lists/*
+
+# Set the working directory inside the container.
 WORKDIR /app
 
-# Copy only requirements first for caching
-COPY requirements.txt ./
+# Install Python dependencies.
+COPY requirements.txt .
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
-# Install dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Copy the rest of the application code.
+COPY . .
 
-# Copy the rest of the application code
-COPY . ./
-
-# Default port (can be overridden at runtime)
-ENV PORT=8000
-
-# Expose the port the app runs on
+# Expose the port that FastAPI will run on.
 EXPOSE 8000
 
-# Run a simple HTTP server to serve the static files
-CMD ["sh", "-c", "python -m http.server ${PORT:-8000}"]
+# Command to run the FastAPI application with Uvicorn.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
