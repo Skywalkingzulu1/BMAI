@@ -2,7 +2,8 @@ import os
 from datetime import datetime, timedelta
 from typing import Literal, Optional, Dict
 
-from fastapi import Depends, FastAPI, HTTPException, status
+import stripe
+from fastapi import Depends, FastAPI, HTTPException, status, Body
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -25,6 +26,12 @@ EMAIL_TOKEN_EXPIRE_MINUTES = 60
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 # The tokenUrl must match the path of the login endpoint.
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
+
+# Stripe configuration
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
+if not STRIPE_SECRET_KEY:
+    raise RuntimeError("STRIPE_SECRET_KEY environment variable not set")
+stripe.api_key = STRIPE_SECRET_KEY
 
 
 def get_password_hash(password: str) -> str:
@@ -69,6 +76,7 @@ def decode_token(token: str) -> dict:
             detail="Could not validate credentials",
         ) from exc
 
+
 # ----------------------------------------------------------------------
 # Pydantic models
 # ----------------------------------------------------------------------
@@ -84,11 +92,10 @@ class UserCreate(BaseModel):
     password: str = Field(..., min_length=6)
     role: Literal["driver", "company"]
 
-    @validator("password")
-    def password_not_common(cls, v: str) -> str:
-        # Very light check – real apps should use a password‑strength library.
-        if v.lower() == "password":
-            raise ValueError("Password is too common")
+    @validator("role")
+    def role_must_be_valid(cls, v):
+        if v not in ("driver", "company"):
+            raise ValueError("role must be either 'driver' or 'company'")
         return v
 
 
@@ -97,100 +104,64 @@ class Token(BaseModel):
     token_type: str = "bearer"
 
 
-class TokenData(BaseModel):
-    email: Optional[EmailStr] = None
-    role: Optional[Literal["driver", "company"]] = None
-
-
-class UserResponse(BaseModel):
-    email: EmailStr
-    role: Literal["driver", "company"]
-    is_verified: bool
+class PaymentIntentRequest(BaseModel):
+    amount: int = Field(..., gt=0, description="Amount in the smallest currency unit (e.g., cents)")
 
 
 # ----------------------------------------------------------------------
-# FastAPI app and utility dependencies
+# FastAPI app and routes
 # ----------------------------------------------------------------------
-app = FastAPI(title="Drive Online Authentication API")
+app = FastAPI(title="Drive Online API")
 
 
 def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
-    """Dependency that extracts the current user from the JWT token."""
     payload = decode_token(token)
     email: str = payload.get("sub")
-    role: str = payload.get("role")
-    if email is None or role is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token payload",
-        )
-    user = users_db.get(email)
-    if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found",
-        )
-    if user.role != role:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token role mismatch",
-        )
-    return user
+    if email is None or email not in users_db:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication credentials")
+    return users_db[email]
 
 
-# ----------------------------------------------------------------------
-# Routes
-# ----------------------------------------------------------------------
-@app.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-def register(user_in: UserCreate):
-    """
-    Register a new driver or logistics company.
-    """
+@app.post("/register", response_model=Token)
+async def register(user_in: UserCreate):
     if user_in.email in users_db:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered",
-        )
+        raise HTTPException(status_code=400, detail="User already exists")
     hashed = get_password_hash(user_in.password)
-    user = User(
-        email=user_in.email,
-        hashed_password=hashed,
-        role=user_in.role,
-        is_verified=False,
-    )
+    user = User(email=user_in.email, hashed_password=hashed, role=user_in.role, is_verified=False)
     users_db[user.email] = user
-    return UserResponse(email=user.email, role=user.role, is_verified=user.is_verified)
-
-
-@app.post("/login", response_model=Token)
-def login(form_data: OAuth2PasswordRequestForm = Depends()):
-    """
-    Authenticate a user and return a JWT access token.
-    """
-    user = users_db.get(form_data.username)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password",
-        )
-    if not verify_password(form_data.password, user.hashed_password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password",
-        )
-    access_token = create_access_token(
-        data={"sub": user.email, "role": user.role}
-    )
+    access_token = create_access_token(data={"sub": user.email})
     return Token(access_token=access_token)
 
 
-@app.get("/users/me", response_model=UserResponse)
-def read_current_user(current_user: User = Depends(get_current_user)):
+@app.post("/login", response_model=Token)
+async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    user = users_db.get(form_data.username)
+    if not user or not verify_password(form_data.password, user.hashed_password):
+        raise HTTPException(status_code=400, detail="Incorrect email or password")
+    access_token = create_access_token(data={"sub": user.email})
+    return Token(access_token=access_token)
+
+
+@app.post("/payment_intent")
+async def create_payment_intent(
+    payload: PaymentIntentRequest = Body(...),
+    current_user: User = Depends(get_current_user)
+):
     """
-    Return the authenticated user's profile.
+    Create a Stripe PaymentIntent for the authenticated user.
+    Amount should be provided in the smallest currency unit (e.g., cents).
     """
-    return UserResponse(
-        email=current_user.email,
-        role=current_user.role,
-        is_verified=current_user.is_verified,
-    )
+    try:
+        intent = stripe.PaymentIntent.create(
+            amount=payload.amount,
+            currency="zar",
+            metadata={"user_email": current_user.email, "role": current_user.role},
+        )
+        return {"client_secret": intent.client_secret}
+    except stripe.error.StripeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ----------------------------------------------------------------------
+# Placeholder for additional routes (e.g., job listings, driver-company matching)
+# ----------------------------------------------------------------------
+# ... (other route implementations would go here)
