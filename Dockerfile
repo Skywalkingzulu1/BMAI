@@ -1,34 +1,28 @@
-FROM python:3.11-slim
+# Use the official lightweight Python image.
+FROM python:3.12-slim
 
-# Set environment variables
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+# Prevent Python from writing .pyc files and enable stdout/stderr unbuffered.
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential \
-        gcc \
-        libpq-dev \
-    && rm -rf /var/lib/apt/lists/*
+# Install any system dependencies required for building Python packages.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends build-essential && \
+    rm -rf /var/lib/apt/lists/*
 
-# Create a non‑root user
-RUN useradd -m appuser
+# Set the working directory inside the container.
 WORKDIR /app
 
-# Install Python dependencies
-COPY requirements.txt ./
+# Install Python dependencies.
+COPY requirements.txt .
 RUN pip install --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
+# Copy the rest of the application code.
 COPY . .
 
-# Change ownership to non‑root user
-RUN chown -R appuser:appuser /app
-USER appuser
+# Expose the port that FastAPI will run on.
+EXPOSE 8000
 
-# Expose the port the app runs on
-EXPOSE 80
-
-# Command to run the FastAPI app with uvicorn
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "80"]
+# Command to run the FastAPI application with uvicorn.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
