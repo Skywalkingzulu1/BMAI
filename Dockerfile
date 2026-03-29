@@ -1,3 +1,32 @@
-FROM python:3.12-slim\n\n# Set working directory\nWORKDIR /app\n\n# Install system dependencies (if any)\nRUN apt-get update && apt-get install -y --no-install-recommends \\
-    build-essential \\
-    && rm -rf /var/lib/apt/lists/*\n\n# Copy only requirements first for caching\nCOPY requirements.txt ./\n\n# Install Python dependencies\nRUN pip install --no-cache-dir -r requirements.txt\n\n# Copy the rest of the application code\nCOPY . ./\n\n# Set environment variables (can be overridden at runtime)\nENV SECRET_KEY=supersecretkey\nENV STRIPE_SECRET_KEY=\n\n# Expose the port FastAPI runs on\nEXPOSE 8000\n\n# Command to run the FastAPI app\nCMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Use an official lightweight Python image.
+FROM python:3.11-slim
+
+# Set environment variables.
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+# Install system dependencies.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create a non‑root user to run the app.
+RUN useradd -m appuser
+WORKDIR /app
+
+# Install Python dependencies.
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy the application code.
+COPY . .
+
+# Change ownership to the non‑root user.
+RUN chown -R appuser:appuser /app
+USER appuser
+
+# Expose the port FastAPI will run on.
+EXPOSE 8000
+
+# Command to run the FastAPI application.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
