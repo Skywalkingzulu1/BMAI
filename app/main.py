@@ -8,36 +8,81 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel, EmailStr, Field
-
-# ----------------------------------------------------------------------
-# In‑memory "database"
-# ----------------------------------------------------------------------
-# The key is the user's email address; the value is a User instance.
-users_db: Dict[str, "User"] = {}
-
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # ----------------------------------------------------------------------
 # Settings & security utilities
 # ----------------------------------------------------------------------
-SECRET_KEY = os.getenv("SECRET_KEY", "supersecretkey")
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
-EMAIL_TOKEN_EXPIRE_MINUTES = 60
 
+
+class Settings(BaseSettings):
+    """Application configuration loaded from environment variables.
+
+    Uses python-dotenv to read a .env file if present.
+    """
+
+    secret_key: str = "supersecretkey"
+    algorithm: str = "HS256"
+    access_token_expire_minutes: int = 30
+    email_token_expire_minutes: int = 60
+    # Provide a default empty string so the app can start in test environments.
+    stripe_secret_key: str = ""
+
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+
+
+# Instantiate settings; validation occurs here.
+settings = Settings()
+
+# Security utilities
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 # The tokenUrl must match the path of the login endpoint.
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
 
 # Stripe configuration
-STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
-if not STRIPE_SECRET_KEY:
-    raise RuntimeError("STRIPE_SECRET_KEY environment variable not set")
-stripe.api_key = STRIPE_SECRET_KEY
+stripe.api_key = settings.stripe_secret_key
+
+# ----------------------------------------------------------------------
+# FastAPI app and models
+# ----------------------------------------------------------------------
 
 
-def get_password_hash(password: str) -> str:
-    """Hash a plain password using bcrypt."""
-    return pwd_context.hash(password)
+app = FastAPI(title="BMAI API", version="0.1.0")
+
+
+class User(BaseModel):
+    username: str
+    email: EmailStr
+    full_name: Optional[str] = None
+    disabled: Optional[bool] = False
+
+
+class UserInDB(User):
+    hashed_password: str
+
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+
+# In‑memory "database"
+fake_users_db: Dict[str, UserInDB] = {
+    "alice": UserInDB(
+        username="alice",
+        email="alice@example.com",
+        full_name="Alice Wonderland",
+        hashed_password=pwd_context.hash("secret1"),
+        disabled=False,
+    ),
+    "bob": UserInDB(
+        username="bob",
+        email="bob@example.com",
+        full_name="Bob Builder",
+        hashed_password=pwd_context.hash("secret2"),
+        disabled=False,
+    ),
+}
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -45,153 +90,79 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
 
 
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
-    """Create a JWT access token.
+def get_password_hash(password: str) -> str:
+    """Hash a plain password using bcrypt."""
+    return pwd_context.hash(password)
 
-    The token contains the supplied ``data`` and an expiration claim.
+
+def get_user(username: str) -> Optional[UserInDB]:
+    return fake_users_db.get(username)
+
+
+def authenticate_user(username: str, password: str) -> Optional[UserInDB]:
+    """Validate username and password.
+
+    Returns the user object if authentication succeeds, otherwise ``None``.
     """
-    to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
-    to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-
-
-def create_email_token(email: str) -> str:
-    """Create a token used for email verification (not used in this task)."""
-    expire = datetime.utcnow() + timedelta(minutes=EMAIL_TOKEN_EXPIRE_MINUTES)
-    to_encode = {"sub": email, "exp": expire, "type": "email_verification"}
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-
-
-def decode_token(token: str) -> dict:
-    """Decode a JWT token and return its payload.
-
-    Raises ``HTTPException`` with 401 if the token is invalid or expired.
-    """
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        return payload
-    except JWTError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Could not validate credentials",
-        ) from exc
-
-
-# ----------------------------------------------------------------------
-# Pydantic models
-# ----------------------------------------------------------------------
-class User(BaseModel):
-    email: EmailStr
-    hashed_password: str
-    is_active: bool = True
-
-
-class TokenResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-
-
-class InferenceInput(BaseModel):
-    """Schema for the inference request payload."""
-    text: str = Field(..., description="Input text for the AI model.")
-
-
-class InferenceResult(BaseModel):
-    """Schema for the inference response."""
-    result: str = Field(..., description="Result generated by the AI model.")
-
-
-# ----------------------------------------------------------------------
-# FastAPI app
-# ----------------------------------------------------------------------
-app = FastAPI(title="BMAI API", version="0.1.0")
-
-
-# ----------------------------------------------------------------------
-# Dependency: get current user from token
-# ----------------------------------------------------------------------
-def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
-    payload = decode_token(token)
-    email: str = payload.get("sub")
-    if email is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token payload missing subject",
-        )
-    user = users_db.get(email)
-    if user is None or not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found or inactive",
-        )
+    user = get_user(username)
+    if not user:
+        return None
+    if not verify_password(password, user.hashed_password):
+        return None
     return user
 
 
-# ----------------------------------------------------------------------
-# Authentication endpoints
-# ----------------------------------------------------------------------
-@app.post("/login", response_model=TokenResponse, tags=["auth"])
-async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+    """Create a JWT token.
+
+    ``data`` should contain at least a ``sub`` key with the username.
     """
-    Authenticate a user and return a JWT access token.
-    """
-    user = users_db.get(form_data.username)
-    if not user:
-        raise HTTPException(status_code=400, detail="Incorrect email or password")
-    if not verify_password(form_data.password, user.hashed_password):
-        raise HTTPException(status_code=400, detail="Incorrect email or password")
-    access_token = create_access_token(data={"sub": user.email})
-    return TokenResponse(access_token=access_token)
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=settings.access_token_expire_minutes)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, settings.secret_key, algorithm=settings.algorithm)
+    return encoded_jwt
 
 
-# ----------------------------------------------------------------------
-# Helper: dummy AI model inference
-# ----------------------------------------------------------------------
-def dummy_model_inference(text: str) -> str:
-    """
-    Placeholder for the real AI model inference.
-    For demonstration, it simply reverses the input text.
-    """
-    return text[::-1]
-
-
-# ----------------------------------------------------------------------
-# Inference endpoint (protected)
-# ----------------------------------------------------------------------
-@app.post("/infer", response_model=InferenceResult, tags=["inference"])
-async def infer(
-    payload: InferenceInput = Body(...),
-    current_user: User = Depends(get_current_user),
-):
-    """
-    Run AI model inference on the provided input.
-
-    - **payload.text**: The text to be processed by the model.
-    - Returns a JSON object containing the inference result.
-    """
+async def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
     try:
-        result = dummy_model_inference(payload.text)
-        return InferenceResult(result=result)
-    except Exception as exc:
-        # Log the exception in a real-world scenario
+        payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
+        username: str = payload.get("sub")
+        if username is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+    user = get_user(username)
+    if user is None:
+        raise credentials_exception
+    if user.disabled:
+        raise HTTPException(status_code=400, detail="Inactive user")
+    return user
+
+
+@app.post("/login", response_model=Token)
+async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    user = authenticate_user(form_data.username, form_data.password)
+    if not user:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="An error occurred during model inference.",
-        ) from exc
-
-
-# ----------------------------------------------------------------------
-# Example: create a default user for quick testing (remove in production)
-# ----------------------------------------------------------------------
-def _create_default_user():
-    email = "test@example.com"
-    if email not in users_db:
-        users_db[email] = User(
-            email=email,
-            hashed_password=get_password_hash("testpassword"),
-            is_active=True,
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
         )
+    access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
+    access_token = create_access_token(data={"sub": user.username}, expires_delta=access_token_expires)
+    return Token(access_token=access_token)
 
 
-_create_default_user()
+@app.get("/users/me", response_model=User)
+async def read_users_me(current_user: User = Depends(get_current_user)):
+    """Return the authenticated user's information."""
+    return current_user

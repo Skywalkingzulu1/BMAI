@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bm-ai-deployment
+  labels:
+    app: bm-ai
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: bm-ai
+  template:
+    metadata:
+      labels:
+        app: bm-ai
+    spec:
+      containers:
+        - name: bm-ai-container
+          image: yourdockerrepo/bmai:latest
+          ports:
+            - containerPort: 80
+          env:
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bm-ai-secret
+                  key: secret_key
+            - name: STRIPE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bm-ai-secret
+                  key: stripe_secret_key
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 80
+            initialDelaySeconds: 15
+            periodSeconds: 20
