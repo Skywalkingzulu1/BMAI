@@ -1,0 +1,26 @@
+{
+  "name": "BMAI",
+  "description": "A multi use AI platform, formerly a logistics platform",
+  "author": "Andile Skywalkingzulu Sizophila Mchunu",
+  "email": "andilexmchunu@gmail.com",
+  "version": "0.1.0",
+  "repository_path": "C:\\\\Users\\\\molel\\\\Soul\\\\contributions\\\\BMAI",
+  "dependencies": [
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.27.0",
+    "python-jose[cryptography]>=3.3.0",
+    "passlib[bcrypt]>=1.7.4",
+    "email-validator>=2.1.0",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "python-dotenv>=1.0.0",
+    "pydantic-settings>=2.0.0",
+    "tenacity>=8.0.0",
+    "stripe>=5.0.0"
+  ],
+  "entrypoints": {
+    "api": "app.main:app"
+  },
+  "license": "MIT",
+  "created_at": "2026-03-31T00:00:00Z"
+}
